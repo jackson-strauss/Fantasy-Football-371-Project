@@ -16,6 +16,7 @@ import nflreadpy as nfl
 import pandas as pd
 
 from features import TARGET, add_features, load_weekly
+from injuries import add_availability
 
 ACTIVE_WINDOW = 4  # player must have played within this many weeks to be projected
 
@@ -82,6 +83,7 @@ def predict_week(season=None, week=None, data_path="data/weekly.csv",
     out = rows[["player_display_name", "position", team_col, "opponent_team",
                 "projected", "player_id"]].rename(columns={team_col: "team"})
     out = out.merge(actual.rename(columns={TARGET: "actual"}), on="player_id", how="left")
+    out = add_availability(out, season, week)
     out = out.sort_values("projected", ascending=False).reset_index(drop=True)
 
     if season <= bundle["trained_through_season"]:
@@ -97,6 +99,8 @@ def main():
     parser.add_argument("--week", type=int)
     parser.add_argument("--position", choices=["QB", "RB", "WR", "TE"])
     parser.add_argument("--top", type=int, default=25, help="rows to print per position")
+    parser.add_argument("--show-injured", action="store_true",
+                        help="include players ruled out / on IR in the printed rankings")
     args = parser.parse_args()
 
     out, season, week = predict_week(args.season, args.week)
@@ -106,17 +110,21 @@ def main():
     out.to_csv(out_path, index=False)
 
     show_actual = out["actual"].notna().any()
-    cols = ["player_display_name", "team", "opponent_team", "projected"]
+    cols = ["player_display_name", "team", "opponent_team", "projected", "injury_status"]
     if show_actual:
         cols.append("actual")
 
+    shown = out if args.show_injured else out[out["available"]]
     positions = [args.position] if args.position else ["QB", "RB", "WR", "TE"]
     print(f"\nProjected PPR points - {season} week {week}")
     for p in positions:
         print(f"\n== {p} ==")
-        print(out[out["position"] == p][cols].head(args.top).to_string(index=False))
+        print(shown[shown["position"] == p][cols].head(args.top).to_string(index=False))
 
-    print(f"\nSaved all {len(out)} projections to {out_path}")
+    hidden = (~out["available"]).sum()
+    if hidden and not args.show_injured:
+        print(f"\n{hidden} players ruled out / on IR hidden (use --show-injured to list them)")
+    print(f"Saved all {len(out)} projections to {out_path}")
 
 
 if __name__ == "__main__":

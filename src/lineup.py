@@ -61,9 +61,11 @@ def recommend_lineup(roster, slots=DEFAULT_SLOTS):
 
     Fixed position slots are filled first, then FLEX takes the best remaining
     RB/WR/TE. This greedy order is optimal for standard lineups.
+    Players marked unavailable (Out, Doubtful, IR, ...) are never started.
     Returns (starters DataFrame with a 'slot' column, bench DataFrame).
     """
     pool = roster.sort_values("projected", ascending=False)
+    eligible = pool[pool["available"]] if "available" in pool.columns else pool
     used = set()
     starters = []
 
@@ -71,7 +73,7 @@ def recommend_lineup(roster, slots=DEFAULT_SLOTS):
     flex_count = len(slots) - len(fixed)
 
     for slot in fixed:
-        options = pool[(pool["position"] == slot) & (~pool["player_id"].isin(used))]
+        options = eligible[(eligible["position"] == slot) & (~eligible["player_id"].isin(used))]
         if options.empty:
             starters.append({"slot": slot, "player_display_name": "(empty)"})
             continue
@@ -80,7 +82,8 @@ def recommend_lineup(roster, slots=DEFAULT_SLOTS):
         starters.append({"slot": slot, **pick.to_dict()})
 
     for _ in range(flex_count):
-        options = pool[pool["position"].isin(FLEX_POSITIONS) & (~pool["player_id"].isin(used))]
+        options = eligible[eligible["position"].isin(FLEX_POSITIONS)
+                           & (~eligible["player_id"].isin(used))]
         if options.empty:
             starters.append({"slot": "FLEX", "player_display_name": "(empty)"})
             continue
@@ -117,7 +120,8 @@ def main():
     starters, bench = recommend_lineup(roster)
 
     has_actual = "actual" in roster.columns and roster["actual"].notna().any()
-    cols = ["slot", "player_display_name", "position", "team", "opponent_team", "projected"]
+    cols = ["slot", "player_display_name", "position", "team", "opponent_team",
+            "projected", "injury_status"]
     if has_actual:
         cols.append("actual")
 
