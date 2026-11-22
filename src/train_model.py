@@ -1,65 +1,16 @@
-import pandas as pd
+from pathlib import Path
+
+import joblib
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error
 
+from features import FEATURES, POSITIONS, TARGET, add_features, load_weekly
+
 TEST_SEASON = 2025  # train on seasons before, test on this one
-TARGET = "fantasy_points_ppr"
-POSITIONS = ["QB", "RB", "WR", "TE"]
 
-
-#Load and clean#
-df = pd.read_csv("data/weekly.csv", low_memory=False)
-df = df[
-    (df["season_type"] == "REG")
-    & (df["position"].isin(POSITIONS))
-].copy()
-df = df.sort_values(["player_id", "season", "week"]).reset_index(drop=True)
-
-#Features#
-g = df.groupby("player_id")
-
-for col in [TARGET, "targets", "carries"]:
-    df[f"{col}_roll3"] = g[col].transform(
-        lambda s: s.shift(1).rolling(3, min_periods=1).mean()
-    )
-
-df["ppr_career_avg"] = g[TARGET].transform(
-    lambda s: s.shift(1).expanding().mean()
-)
-df["games_played"] = g.cumcount()
-
-# Opponent strength: avg PPR points this defense allowed to this position recently
-opp = (
-    df.groupby(["opponent_team", "position", "season", "week"])[TARGET]
-    .mean()
-    .reset_index()
-    .sort_values(["opponent_team", "position", "season", "week"])
-)
-opp["opp_allowed_avg"] = opp.groupby(["opponent_team", "position"])[TARGET].transform(
-    lambda s: s.shift(1).rolling(5, min_periods=1).mean()
-)
-df = df.merge(
-    opp.drop(columns=TARGET),
-    on=["opponent_team", "position", "season", "week"],
-)
-
-# One-hot encode position into explicitly named numeric columns
-pos_cols = []
-for p in POSITIONS:
-    col = f"is_{p}"
-    df[col] = (df["position"] == p).astype(int)
-    pos_cols.append(col)
-
-features = [
-    f"{TARGET}_roll3",
-    "targets_roll3",
-    "carries_roll3",
-    "ppr_career_avg",
-    "games_played",
-    "opp_allowed_avg",
-] + pos_cols
-
-df = df.dropna(subset=features + [TARGET])
+#Load, clean, and build features#
+df = add_features(load_weekly())
+df = df.dropna(subset=FEATURES + [TARGET])
 
 #Time-based split, cant check what they actualy did with the prediction#
 train = df[df["season"] < TEST_SEASON]
@@ -73,9 +24,44 @@ baseline_mae = mean_absolute_error(test[TARGET], test[f"{TARGET}_roll3"])
 model = HistGradientBoostingRegressor(
     max_iter=300, learning_rate=0.05, random_state=42
 )
-model.fit(train[features], train[TARGET])
-preds = model.predict(test[features])
+model.fit(train[FEATURES], train[TARGET])
+preds = model.predict(test[FEATURES])
 model_mae = mean_absolute_error(test[TARGET], preds)
 
 print(f"Baseline MAE (rolling avg): {baseline_mae:.2f}")
 print(f"Model MAE:                  {model_mae:.2f}")
+
+#Per-position evaluation#
+results = test[["position", TARGET, f"{TARGET}_roll3"]].copy()
+results["pred"] = preds
+
+print(f"\n{'Pos':<4} {'Rows':>6} {'Baseline':>9} {'Model':>7} {'Improve':>8}")
+for p in POSITIONS:
+    r = results[results["position"] == p]
+    if r.empty:
+        continue
+    b = mean_absolute_error(r[TARGET], r[f"{TARGET}_roll3"])
+    m = mean_absolute_error(r[TARGET], r["pred"])
+    print(f"{p:<4} {len(r):>6} {b:>9.2f} {m:>7.2f} {b - m:>+8.2f}")
+
+#Save model#
+# Refit on all seasons up through TEST_SEASON so the saved model has the most data
+final_model = HistGradientBoostingRegressor(
+    max_iter=300, learning_rate=0.05, random_state=42
+)
+final_df = df[df["season"] <= TEST_SEASON]
+final_model.fit(final_df[FEATURES], final_df[TARGET])
+
+Path("models").mkdir(exist_ok=True)
+joblib.dump(
+    {
+        "model": final_model,
+        "features": FEATURES,
+        "target": TARGET,
+        "positions": POSITIONS,
+        "trained_through_season": TEST_SEASON,
+        "test_mae": model_mae,
+    },
+    "models/model.joblib",
+)
+print(f"\nSaved models/model.joblib (trained on seasons through {TEST_SEASON})")
