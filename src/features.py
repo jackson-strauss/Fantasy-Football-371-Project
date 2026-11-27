@@ -17,7 +17,12 @@ FEATURES = [
     "ppr_career_avg",
     "games_played",
     "opp_allowed_avg",
+    "ppr_std6",
 ] + POS_COLS
+
+# Features that must be present for a row to be used in training.
+# ppr_std6 needs 2+ prior games, but the model handles it being missing.
+REQUIRED_FEATURES = [f for f in FEATURES if f != "ppr_std6"]
 
 
 def load_weekly(path="data/weekly.csv"):
@@ -44,6 +49,11 @@ def add_features(df):
         lambda s: s.shift(1).expanding().mean()
     )
     df["games_played"] = g.cumcount()
+
+    # Volatility: how much the player's scoring has swung over the previous 6 games
+    df["ppr_std6"] = g[TARGET].transform(
+        lambda s: s.shift(1).rolling(6, min_periods=2).std()
+    )
 
     # Opponent strength: avg PPR points this defense allowed to this position
     # over its previous 5 games

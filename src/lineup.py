@@ -56,15 +56,18 @@ def match_roster(projections, roster_names):
     return matched.drop_duplicates("player_id"), unmatched
 
 
-def recommend_lineup(roster, slots=DEFAULT_SLOTS):
-    """Fill lineup slots with the highest-projected eligible players.
+def recommend_lineup(roster, slots=DEFAULT_SLOTS, score="projected"):
+    """Fill lineup slots with the eligible players who have the highest `score`.
+
+    `score` is a column name: "projected" (default), "floor" for a safe lineup,
+    "ceiling" for a high-upside one, or any custom column.
 
     Fixed position slots are filled first, then FLEX takes the best remaining
     RB/WR/TE. This greedy order is optimal for standard lineups.
     Players marked unavailable (Out, Doubtful, IR, ...) are never started.
     Returns (starters DataFrame with a 'slot' column, bench DataFrame).
     """
-    pool = roster.sort_values("projected", ascending=False)
+    pool = roster.sort_values(score, ascending=False)
     eligible = pool[pool["available"]] if "available" in pool.columns else pool
     used = set()
     starters = []

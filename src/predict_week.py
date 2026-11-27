@@ -13,6 +13,7 @@ from pathlib import Path
 
 import joblib
 import nflreadpy as nfl
+import numpy as np
 import pandas as pd
 
 from features import TARGET, add_features, load_weekly
@@ -28,6 +29,74 @@ def get_matchups(season, week):
     home = sched.rename(columns={"home_team": "team", "away_team": "opponent_team"})
     away = sched.rename(columns={"away_team": "team", "home_team": "opponent_team"})
     return pd.concat([home, away])[["team", "opponent_team"]]
+
+
+# Columns returned alongside player/team/opponent. The feature columns are kept
+# so the assistant can explain each projection.
+OUTPUT_COLS = [
+    "projected", "floor", "median", "ceiling", "risk",
+    "matchup_effect", "form_effect", "opp_rank", "opp_count",
+    f"{TARGET}_roll3", "targets_roll3", "carries_roll3", "ppr_career_avg",
+    "ppr_std6", "games_played", "opp_allowed_avg", "player_id",
+]
+
+
+# Roughly how many players per position are startable in a 12-team league;
+# risk labels are calibrated against this group
+RELEVANT_PER_POSITION = {"QB": 24, "RB": 48, "WR": 60, "TE": 24}
+
+
+def add_projection_details(rows, model, q_models, features):
+    """Add projection, outcome range, risk label, and explanation columns."""
+    rows = rows.copy()
+    X = rows[features]
+    rows["projected"] = model.predict(X)
+
+    # Range of outcomes from the quantile models (10th / 50th / 90th percentile)
+    q = np.sort(np.vstack([q_models[k].predict(X) for k in sorted(q_models)]), axis=0)
+    rows["floor"] = np.minimum(q[0], rows["projected"])
+    rows["median"] = q[1]
+    rows["ceiling"] = np.maximum(q[2], rows["projected"])
+
+    # How much the matchup moves the projection: re-predict against a
+    # league-median defense for the position
+    neutral = X.copy()
+    neutral["opp_allowed_avg"] = rows.groupby("position")["opp_allowed_avg"].transform("median")
+    rows["matchup_effect"] = rows["projected"] - model.predict(neutral)
+
+    # How much recent form moves it: re-predict with last-3 average = career average
+    typical = X.copy()
+    typical[f"{TARGET}_roll3"] = rows["ppr_career_avg"]
+    rows["form_effect"] = rows["projected"] - model.predict(typical)
+
+    # Rank each defense by points allowed to the position (1 = most allowed)
+    opp = rows.drop_duplicates(["position", "opponent_team"])[
+        ["position", "opponent_team", "opp_allowed_avg"]].copy()
+    opp["opp_rank"] = opp.groupby("position")["opp_allowed_avg"].rank(
+        ascending=False, method="min").astype(int)
+    opp["opp_count"] = opp.groupby("position")["opponent_team"].transform("count")
+    rows = rows.merge(opp.drop(columns="opp_allowed_avg"),
+                      on=["position", "opponent_team"], how="left")
+
+    # Risk label: is this player's range of outcomes wider or narrower than is
+    # typical for a similar projection? "Typical" is a line fit through the
+    # fantasy-relevant players at the position this week.
+    spread = rows["ceiling"] - rows["floor"]
+    rows["risk"] = "Moderate"
+    for pos, idx in rows.groupby("position").groups.items():
+        relevant = rows.loc[idx, "projected"].nlargest(
+            RELEVANT_PER_POSITION.get(pos, 30)).index
+        if len(relevant) < 6:
+            continue
+        slope, intercept = np.polyfit(rows.loc[relevant, "projected"], spread.loc[relevant], 1)
+        excess = spread.loc[idx] - (slope * rows.loc[idx, "projected"] + intercept)
+        lo, hi = excess.loc[relevant].quantile([1 / 3, 2 / 3])
+        rows.loc[idx, "risk"] = np.select([excess <= lo, excess > hi],
+                                          ["Steady", "Boom/bust"], "Moderate")
+
+    for col in ["projected", "floor", "median", "ceiling", "matchup_effect", "form_effect"]:
+        rows[col] = rows[col].round(1)
+    return rows
 
 
 def predict_week(season=None, week=None, data_path="data/weekly.csv",
@@ -79,9 +148,13 @@ def predict_week(season=None, week=None, data_path="data/weekly.csv",
     feats = add_features(combined)
     rows = feats[(feats["season"] == season) & (feats["week"] == week)].copy()
 
-    rows["projected"] = model.predict(rows[features]).round(1)
-    out = rows[["player_display_name", "position", team_col, "opponent_team",
-                "projected", "player_id"]].rename(columns={team_col: "team"})
+    q_models = bundle.get("quantile_models")
+    if q_models is None:
+        raise SystemExit("models/model.joblib is out of date. Re-run: python src/train_model.py")
+
+    rows = add_projection_details(rows, model, q_models, features)
+    out = rows[["player_display_name", "position", team_col, "opponent_team"]
+               + OUTPUT_COLS].rename(columns={team_col: "team"})
     out = out.merge(actual.rename(columns={TARGET: "actual"}), on="player_id", how="left")
     out = add_availability(out, season, week)
     out = out.sort_values("projected", ascending=False).reset_index(drop=True)
@@ -110,7 +183,8 @@ def main():
     out.to_csv(out_path, index=False)
 
     show_actual = out["actual"].notna().any()
-    cols = ["player_display_name", "team", "opponent_team", "projected", "injury_status"]
+    cols = ["player_display_name", "team", "opponent_team", "projected", "floor", "ceiling",
+            "risk", "injury_status"]
     if show_actual:
         cols.append("actual")
 

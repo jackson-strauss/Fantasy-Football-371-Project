@@ -5,9 +5,24 @@ upcoming week and recommends which players on your roster to start or bench.
 
 The model is trained on weekly NFL player stats since 2018 (via
 [nflreadpy](https://github.com/nflverse/nflreadpy)), using recent form, career
-averages, usage (targets and carries), and how many points each opponent's defense
-has allowed to the position. Injury reports and roster status are used to keep
-injured players out of the starting lineup.
+averages, usage (targets and carries), scoring volatility, and how many points each
+opponent's defense has allowed to the position. Injury reports and roster status are
+used to keep injured players out of the starting lineup.
+
+What it does beyond a normal fantasy app's projections:
+
+- **Personalized recommendations**: builds the best lineup from your whole roster,
+  explains the closest start/sit calls, and suggests free-agent pickups that would
+  improve your lineup (or your chance of winning).
+- **Explainable projections**: every player gets plain-English reasons, e.g. *"Averaging
+  18.1 PPR points over the last 3 games... CLE has allowed the 10th-most PPR points to
+  TEs... the matchup adds 0.9 pts compared with an average defense."*
+- **Risk analysis**: a floor (10th percentile), ceiling (90th percentile), and a
+  Steady / Moderate / Boom-bust label for each player, plus Safe and Upside lineup strategies.
+- **Opponent-specific strategy**: enter your opponent's roster and the assistant simulates
+  the week 10,000 times to estimate your win probability, then picks the lineup that
+  gives you the best chance of winning: safer when you're favored, higher-upside when
+  you're the underdog.
 
 ## Setup
 
@@ -38,10 +53,15 @@ streamlit run src/app.py
 Then open http://localhost:8501. The site is only available while this command is
 running; press Ctrl+C in the terminal to stop it.
 
-- **My lineup**: add your roster to get recommended starters, bench, and injury warnings.
-- **Player rankings**: projections for every player, filterable by position.
-- Use the sidebar to pick the season, week, and your league's lineup slots. Choosing
-  a past week also shows the points each player actually scored.
+- **My lineup**: add your roster to get recommended starters with reasons, the closest
+  start/sit calls, and your bench. Optionally add your opponent's roster (for win
+  probability and strategy) and your league's free agents (for pickup suggestions).
+- **Player rankings**: projections, floors, ceilings, and risk for every player, with an
+  "Explain a player" section.
+- **How it works**: a short description of the methods.
+- Use the sidebar to pick the season, week, strategy (Auto / Balanced / Safe / Upside),
+  and your league's lineup slots. Choosing a past week also shows the points each player
+  actually scored.
 
 ## Command-line tools
 
@@ -65,21 +85,28 @@ python src/lineup.py --players "Josh Allen, Bijan Robinson, Puka Nacua"
 | `src/predict_week.py` | Project points for every player in a given week |
 | `src/injuries.py` | Player availability from injury reports and weekly roster status |
 | `src/lineup.py` | Match a roster and pick the best starting lineup |
+| `src/explain.py` | Plain-English explanations of projections and start/sit calls |
+| `src/strategy.py` | Simulations, win probability, risk-based lineups, and pickup suggestions |
 | `src/app.py` | Streamlit web interface |
 
 ## Model performance
 
 Tested on the 2025 season after training on 2018–2024. MAE is the average
 error in PPR points per player per game (lower is better). The baseline predicts
-each player's average over their last 3 games.
+each player's average over their last 3 games. "Range hit" is how often the actual
+score landed between the predicted floor and ceiling (the target is 80%).
 
-| Position | Baseline MAE | Model MAE |
-|---|---|---|
-| QB | 7.03 | 6.73 |
-| RB | 4.70 | 4.55 |
-| WR | 4.57 | 4.37 |
-| TE | 3.87 | 3.64 |
-| **All** | **4.72** | **4.52** |
+| Position | Baseline MAE | Model MAE | Range hit |
+|---|---|---|---|
+| QB | 7.03 | 6.77 | 74.3% |
+| RB | 4.70 | 4.46 | 81.5% |
+| WR | 4.57 | 4.30 | 79.0% |
+| TE | 3.87 | 3.65 | 81.2% |
+| **All** | **4.72** | **4.47** | **79.6%** |
+
+Limitations: players are simulated independently (a QB and their own receivers tend
+to have good or bad weeks together, which isn't modeled), scoring is PPR only, and
+QB ranges are a little too narrow.
 
 ## Troubleshooting
 
